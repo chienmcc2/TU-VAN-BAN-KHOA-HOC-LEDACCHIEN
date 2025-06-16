@@ -2,18 +2,31 @@ import streamlit as st
 from openai import OpenAI
 import os
 
-# Hàm đọc nội dung từ file văn bản
+# --- CÁC HÀM HỖ TRỢ ---
 def rfile(name_file):
-    with open(name_file, "r", encoding="utf-8") as file:
-        return file.read()
+    """Hàm đọc nội dung từ file văn bản một cách an toàn."""
+    try:
+        with open(name_file, "r", encoding="utf-8") as file:
+            return file.read()
+    except FileNotFoundError:
+        st.error(f"Lỗi: Không tìm thấy file `{name_file}`. Vui lòng đảm bảo file này tồn tại.")
+        return "" # Trả về chuỗi rỗng nếu file không tồn tại
 
+# --- KIỂM TRA VÀ KHỞI TẠO API KEY ---
+openai_api_key = st.secrets.get("OPENAI_API_KEY")
+if not openai_api_key:
+    st.error("Chưa tìm thấy OpenAI API Key. Vui lòng thêm key vào Streamlit Secrets với tên `OPENAI_API_KEY`.")
+    st.stop() # Dừng ứng dụng nếu không có key
+
+# Khởi tạo OpenAI client một lần duy nhất
+client = OpenAI(api_key=openai_api_key)
+
+# --- GIAO DIỆN NGƯỜI DÙNG ---
 # Hiển thị logo (nếu có)
-try:
+if os.path.exists("logo.png"):
     col1, col2, col3 = st.columns([3, 2, 3])
     with col2:
         st.image("logo.png", use_container_width=True)
-except:
-    pass
 
 # Hiển thị tiêu đề
 title_content = rfile("00.xinchao.txt")
@@ -22,73 +35,61 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# Lấy OpenAI API key từ st.secrets
-openai_api_key = st.secrets.get("OPENAI_API_KEY")
+# --- LOGIC CHATBOT ---
 
-# Khởi tạo OpenAI client
-client = OpenAI(api_key=openai_api_key)
-
-# Khởi tạo tin nhắn "system" và "assistant"
-INITIAL_SYSTEM_MESSAGE = {"role": "system", "content": rfile("01.system_trainning.txt")}
-INITIAL_ASSISTANT_MESSAGE = {"role": "assistant", "content": rfile("02.assistant.txt")}
-
-# Kiểm tra nếu chưa có session lưu trữ thì khởi tạo tin nhắn ban đầu
+# Khởi tạo session state để lưu trữ tin nhắn
 if "messages" not in st.session_state:
-    st.session_state.messages = [INITIAL_SYSTEM_MESSAGE, INITIAL_ASSISTANT_MESSAGE]
+    # Tải nội dung từ các file cấu hình. AI sẽ hoạt động dựa trên các file này.
+    # Bạn chỉ cần chỉnh sửa file .txt để thay đổi hành vi của AI.
+    system_prompt = rfile("01.system_trainning.txt")
+    assistant_greeting = rfile("02.assistant.txt")
+    
+    # Chỉ khởi tạo nếu cả hai file đều có nội dung
+    if system_prompt and assistant_greeting:
+        st.session_state.messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "assistant", "content": assistant_greeting}
+        ]
+    else:
+        st.session_state.messages = []
 
-# CSS để căn chỉnh trợ lý bên trái, người hỏi bên phải, và thêm icon trợ lý
-st.markdown(
-    """
-    <style>
-        .assistant {
-            padding: 10px;
-            border-radius: 10px;
-            max-width: 75%;
-            background: none; /* Màu trong suốt */
-            text-align: left;
-        }
-        .user {
-            padding: 10px;
-            border-radius: 10px;
-            max-width: 75%;
-            background: none; /* Màu trong suốt */
-            text-align: right;
-            margin-left: auto;
-        }
-        .assistant::before { content: "🤖 "; font-weight: bold; }
-    </style>
-    """,
-    unsafe_allow_html=True
-)
 
-# Hiển thị lịch sử tin nhắn (loại bỏ system để tránh hiển thị)
+# Hiển thị các tin nhắn đã có trong lịch sử (bỏ qua tin nhắn "system")
 for message in st.session_state.messages:
-    if message["role"] == "assistant":
-        st.markdown(f'<div class="assistant">{message["content"]}</div>', unsafe_allow_html=True)
-    elif message["role"] == "user":
-        st.markdown(f'<div class="user">{message["content"]}</div>', unsafe_allow_html=True)
+    if message["role"] != "system":
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
 
-# Ô nhập liệu cho người dùng
-if prompt := st.chat_input("Bạn nhập nội dung cần trao đổi ở đây nhé?"):
-    # Lưu tin nhắn người dùng vào session
+# Xử lý khi người dùng nhập tin nhắn mới
+if prompt := st.chat_input("Nhập nội dung bạn cần tư vấn..."):
+    # Thêm tin nhắn của người dùng vào lịch sử và hiển thị nó
     st.session_state.messages.append({"role": "user", "content": prompt})
-    st.markdown(f'<div class="user">{prompt}</div>', unsafe_allow_html=True)
+    with st.chat_message("user"):
+        st.markdown(prompt)
 
-    # Tạo phản hồi từ API OpenAI
-    response = ""
-    stream = client.chat.completions.create(
-        model=rfile("module_chatgpt.txt").strip(),
-        messages=[{"role": m["role"], "content": m["content"]} for m in st.session_state.messages],
-        stream=True,
-    )
+    # Tạo và hiển thị phản hồi từ AI với hiệu ứng streaming
+    with st.chat_message("assistant"):
+        try:
+            # Lấy tên model từ file cấu hình
+            model_name = rfile("module_chatgpt.txt").strip()
+            if not model_name:
+                st.error("Lỗi: Không tìm thấy tên model trong file `module_chatgpt.txt`.")
+                st.stop()
 
-    # Ghi lại phản hồi của trợ lý vào biến
-    for chunk in stream:
-        if chunk.choices:
-            response += chunk.choices[0].delta.content or ""
+            # Gọi API OpenAI và stream phản hồi
+            stream = client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": m["role"], "content": m["content"]}
+                    for m in st.session_state.messages
+                ],
+                stream=True,
+            )
+            # Dùng write_stream để hiển thị nội dung trả về theo thời gian thực
+            response = st.write_stream(stream)
+            
+            # Lưu lại toàn bộ phản hồi của AI vào lịch sử
+            st.session_state.messages.append({"role": "assistant", "content": response})
 
-    # Hiển thị phản hồi của trợ lý
-    st.markdown(f'<div class="assistant">{response}</div>', unsafe_allow_html=True)
-
-    # Cập nhật lịch sử tin nhắn trong session
-    st.session_state.messages.append({"role": "assistant", "content": response})
+        except Exception as e:
+            st.error(f"Đã có lỗi xảy ra khi kết nối tới OpenAI: {e}")
